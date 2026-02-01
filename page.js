@@ -148,7 +148,9 @@ export default function Andee() {
     conversationContextRef.current = {
       meeting,
       minutesUntil: Math.round(minutesUntil),
-      travelTime: TRAVEL_TIME_MINUTES
+      travelTime: TRAVEL_TIME_MINUTES,
+      clientName: meeting.clientName,
+      location: meeting.location
     };
     
     const initialMessage = `Hey! I noticed you have a meeting with ${meeting.clientName} coming up in ${Math.round(minutesUntil)} minutes, and the travel time is about ${TRAVEL_TIME_MINUTES} minutes. Are you going to make it on time?`;
@@ -165,7 +167,6 @@ export default function Andee() {
   const handleVoiceInput = async (transcript) => {
     setIsProcessing(true);
     
-    // Add user message to history
     const newHistory = [
       ...conversationHistory,
       { role: 'user', content: transcript }
@@ -173,33 +174,26 @@ export default function Andee() {
     setConversationHistory(newHistory);
 
     try {
-      // Call Claude API for intelligent response
-      const response = await fetch("https://api.anthropic.com/v1/messages", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
+      const response = await fetch('/api/ai', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          model: "claude-sonnet-4-20250514",
-          max_tokens: 1000,
-          system: createSystemPrompt(),
           messages: newHistory,
+          context: conversationContextRef.current
         })
       });
 
       const data = await response.json();
-      const assistantResponse = data.content[0].text;
+      const assistantResponse = data.response;
       
       setAssistantMessage(assistantResponse);
       setConversationHistory([...newHistory, { role: 'assistant', content: assistantResponse }]);
       
-      // Check if Claude identified an action to take
       const action = parseAssistantAction(assistantResponse);
       
       if (action) {
         await executeAction(action);
       } else {
-        // Continue conversation
         speak(assistantResponse, () => {
           setTimeout(() => startListening(), 500);
         });
@@ -213,55 +207,6 @@ export default function Andee() {
     } finally {
       setIsProcessing(false);
     }
-  };
-
-  const createSystemPrompt = () => {
-    const context = conversationContextRef.current;
-    if (!context) return '';
-
-    return `You are Andee, a friendly and efficient meeting assistant helping a busy contractor manage their schedule. 
-
-CURRENT SITUATION:
-- The user is currently in a meeting
-- They have another meeting with ${context.meeting.clientName} starting in ${context.minutesUntil} minutes
-- Travel time to the next meeting is ${context.travelTime} minutes
-- Location: ${context.meeting.location}
-
-YOUR PERSONALITY:
-- Conversational and natural (like a helpful coworker, not a robot)
-- Brief and to-the-point (user is busy on-site)
-- Friendly but professional
-- Understanding and non-judgmental
-
-YOUR GOAL:
-Help the user decide what to do about the upcoming conflict. Options are:
-1. CONFIRM - User can make it on time (no action needed)
-2. RESCHEDULE - Delay the meeting by X minutes (update calendar + notify client)
-3. CANCEL - Cancel the meeting entirely (remove from calendar + notify client)
-
-CONVERSATION RULES:
-- Listen to what the user says naturally (don't require exact phrases)
-- Understand intent even if phrased casually ("I'm running behind", "gonna be late", "stuck here", etc.)
-- Ask clarifying questions if needed (e.g., "How many minutes should I push it back?")
-- Once you have clear intent, end your message with one of these ACTION MARKERS:
-  * [ACTION:CONFIRM] - User will make it
-  * [ACTION:RESCHEDULE:X] - Delay by X minutes (replace X with number)
-  * [ACTION:CANCEL] - Cancel the meeting
-
-EXAMPLES OF GOOD RESPONSES:
-User: "Yeah I can make it"
-You: "Perfect! I'll keep monitoring your schedule. [ACTION:CONFIRM]"
-
-User: "No way, I'm stuck here"
-You: "Got it. Would you like me to push the meeting back, or should we cancel it?"
-
-User: "Push it back 20 minutes"
-You: "Sounds good! I'll reschedule your meeting with ${context.meeting.clientName} to 20 minutes later and let them know you're running behind. [ACTION:RESCHEDULE:20]"
-
-User: "Just cancel it"
-You: "Understood. I'll cancel the meeting and notify ${context.meeting.clientName}. [ACTION:CANCEL]"
-
-Keep responses under 30 words when possible. Be natural and conversational.`;
   };
 
   const parseAssistantAction = (response) => {
@@ -451,7 +396,7 @@ Keep responses under 30 words when possible. Be natural and conversational.`;
           </div>
           <h1 className="text-5xl font-black mb-4">Andee</h1>
           <p className="text-slate-400 text-lg mb-2">Your AI Meeting Guardian</p>
-          <p className="text-slate-500 text-sm mb-8">Now with conversational AI voice assistant</p>
+          <p className="text-slate-500 text-sm mb-8">Now with conversational AI assistant</p>
           <button
             onClick={() => signIn('google')}
             className="flex items-center gap-3 bg-white text-slate-900 px-8 py-4 rounded-xl font-bold text-lg hover:bg-slate-100 transition-all duration-300 hover:scale-105 shadow-xl mx-auto"
@@ -489,7 +434,7 @@ Keep responses under 30 words when possible. Be natural and conversational.`;
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 text-white font-sans">
-      <div className="fixed inset-0 opacity-[0.03] pointer-events-none bg-[url('data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIzMDAiIGhlaWdodD0iMzAwIj48ZmlsdGVyIGlkPSJhIiB4PSIwIiB5PSIwIj48ZmVUdXJidWxlbmNlIGJhc2VGcmVxdWVuY3k9Ii43NSIgc3RpdGNoVGlsZXM9InN0aXRjaCIgdHlwZT0iZnJhY3RhbE5vaXNlIi8+PGZlQ29sb3JNYXRyaXggdHlwZT0ic2F0dXJhdGUiIHZhbHVlcz0iMCIvPjwvZmlsdGVyPjxyZWN0IHdpZHRoPSIxMDAlIiBoZWlnaHQ9IjEwMCUiIGZpbHRlcj0idXJsKCNhKSIvPjwvc3ZnPg==')]" />
+      <div className="fixed inset-0 opacity-[0.03] pointer-events-none" style={{backgroundImage: "url('data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIzMDAiIGhlaWdodD0iMzAwIj48ZmlsdGVyIGlkPSJhIiB4PSIwIiB5PSIwIj48ZmVUdXJidWxlbmNlIGJhc2VGcmVxdWVuY3k9Ii43NSIgc3RpdGNoVGlsZXM9InN0aXRjaCIgdHlwZT0iZnJhY3RhbE5vaXNlIi8+PGZlQ29sb3JNYXRyaXggdHlwZT0ic2F0dXJhdGUiIHZhbHVlcz0iMCIvPjwvZmlsdGVyPjxyZWN0IHdpZHRoPSIxMDAlIiBoZWlnaHQ9IjEwMCUiIGZpbHRlcj0idXJsKCNhKSIvPjwvc3ZnPg==')"}} />
       
       <div className="relative z-10 container mx-auto px-4 py-8 max-w-5xl">
         <header className="mb-12 flex items-center justify-between">
@@ -625,7 +570,7 @@ Keep responses under 30 words when possible. Be natural and conversational.`;
               {listening ? 'Listening...' : isProcessing ? 'Processing...' : 'Tap to talk with Andee'}
             </p>
             <p className="text-xs text-slate-500 text-center max-w-md">
-              Speak naturally - no keywords needed. Andee understands context.
+              Speak naturally - Andee understands casual language
             </p>
           </div>
         </div>
@@ -673,7 +618,7 @@ Keep responses under 30 words when possible. Be natural and conversational.`;
 
         <div className="mt-6 p-4 bg-blue-500/10 border border-blue-500/20 rounded-xl">
           <p className="text-sm text-blue-300 text-center">
-            ✨ <strong>New:</strong> Conversational AI powered by Claude - just talk naturally!
+            ✨ <strong>Enhanced AI:</strong> Talk naturally - "I'm stuck", "delay 20", "can't make it"
           </p>
         </div>
       </div>
