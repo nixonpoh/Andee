@@ -1,20 +1,12 @@
-'use client';
-
 import './globals.css';
-import { SessionProvider } from 'next-auth/react';
 
 export default function RootLayout({ children }) {
   return (
     <html lang="en">
       <head>
-        <title>Andee - Your Real-Time Meeting Guardian</title>
-        <meta name="description" content="Voice-first meeting conflict management for contractors" />
+        <title>Andee - Test Build</title>
       </head>
-      <body>
-        <SessionProvider>
-          {children}
-        </SessionProvider>
-      </body>
+      <body>{children}</body>
     </html>
   );
 }
