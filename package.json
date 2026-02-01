@@ -8,9 +8,7 @@
     "start": "next start",
     "lint": "next lint"
   },
-
   "dependencies": {
-<<<<<<< HEAD
     "next": "14.0.4",
     "react": "18.2.0",
     "react-dom": "18.2.0",
@@ -18,16 +16,6 @@
     "next-auth": "^4.24.5",
     "googleapis": "^128.0.0"
   },
-=======
-     "next": "14.0.4",
-     "react": "18.2.0",
-     "react-dom": "18.2.0",
-     "lucide-react": "^0.263.1",
-     "next-auth": "^4.24.5",
-     "googleapis": "^128.0.0"
-   },
-  
->>>>>>> 5d23e92765c396ea181aab9c196e9084e2883610
   "devDependencies": {
     "autoprefixer": "^10.4.16",
     "postcss": "^8.4.32",
