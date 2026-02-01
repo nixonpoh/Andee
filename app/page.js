@@ -1,35 +1,15 @@
 'use client';
 
 import React, { useState, useEffect, useRef } from 'react';
-import { Mic, Calendar, Clock, MapPin, Phone, AlertCircle, CheckCircle, XCircle } from 'lucide-react';
+import { Mic, Calendar, Clock, MapPin, Phone, AlertCircle, CheckCircle, XCircle, LogIn, LogOut } from 'lucide-react';
+import { useSession, signIn, signOut } from 'next-auth/react';
 
-// Simulated meeting data (will be replaced with Google Calendar API)
-const DEMO_MEETINGS = [
-  {
-    id: '1',
-    title: 'Site Inspection - Johnson Residence',
-    location: '123 Oak Street, Portland',
-    startTime: new Date(Date.now() + 30 * 60000), // 30 min from now
-    endTime: new Date(Date.now() + 90 * 60000),
-    clientName: 'Sarah Johnson',
-    clientPhone: '+1234567890'
-  },
-  {
-    id: '2',
-    title: 'HVAC Install - Green Building',
-    location: '456 Pine Avenue, Portland',
-    startTime: new Date(Date.now() + 120 * 60000), // 2 hours from now
-    endTime: new Date(Date.now() + 180 * 60000),
-    clientName: 'Michael Chen',
-    clientPhone: '+0987654321'
-  }
-];
-
-const TRAVEL_TIME_MINUTES = 25; // Simulated travel time
-const WARNING_BUFFER_MINUTES = 5; // Alert X minutes before risk
+const TRAVEL_TIME_MINUTES = 25;
+const WARNING_BUFFER_MINUTES = 5;
 
 export default function Andee() {
-  const [meetings, setMeetings] = useState(DEMO_MEETINGS);
+  const { data: session, status } = useSession();
+  const [meetings, setMeetings] = useState([]);
   const [currentMeeting, setCurrentMeeting] = useState(null);
   const [nextMeeting, setNextMeeting] = useState(null);
   const [alertActive, setAlertActive] = useState(false);
@@ -39,11 +19,11 @@ export default function Andee() {
   const [notifications, setNotifications] = useState([]);
   const [isProcessing, setIsProcessing] = useState(false);
   const [speechSupported, setSpeechSupported] = useState(false);
+  const [loading, setLoading] = useState(false);
   
   const recognitionRef = useRef(null);
   const synthRef = useRef(null);
 
-  // Initialize speech recognition
   useEffect(() => {
     if (typeof window !== 'undefined') {
       synthRef.current = window.speechSynthesis;
@@ -75,37 +55,87 @@ export default function Andee() {
     }
   }, []);
 
-  // Monitor meetings for potential conflicts
   useEffect(() => {
-    const interval = setInterval(() => {
-      checkMeetingConflict();
-    }, 10000); // Check every 10 seconds
+    if (session) {
+      fetchCalendarEvents();
+      const interval = setInterval(fetchCalendarEvents, 5 * 60 * 1000);
+      return () => clearInterval(interval);
+    }
+  }, [session]);
 
-    return () => clearInterval(interval);
+  useEffect(() => {
+    if (meetings.length > 0) {
+      const interval = setInterval(() => {
+        checkMeetingConflict();
+      }, 10000);
+
+      return () => clearInterval(interval);
+    }
   }, [meetings]);
+
+  const fetchCalendarEvents = async () => {
+    setLoading(true);
+    try {
+      const response = await fetch('/api/calendar');
+      if (response.ok) {
+        const data = await response.json();
+        const transformedMeetings = data.events.map(event => ({
+          id: event.id,
+          title: event.summary || 'Untitled Meeting',
+          location: event.location || 'No location specified',
+          startTime: new Date(event.start.dateTime || event.start.date),
+          endTime: new Date(event.end.dateTime || event.end.date),
+          clientName: extractClientName(event),
+          clientPhone: extractClientPhone(event),
+          description: event.description || ''
+        }));
+        setMeetings(transformedMeetings);
+        addNotification('Calendar synced successfully', 'success');
+      } else {
+        addNotification('Failed to fetch calendar events', 'error');
+      }
+    } catch (error) {
+      console.error('Error fetching calendar:', error);
+      addNotification('Error connecting to calendar', 'error');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const extractClientName = (event) => {
+    if (event.attendees && event.attendees.length > 0) {
+      const attendee = event.attendees[0];
+      return attendee.displayName || attendee.email?.split('@')[0] || 'Client';
+    }
+    const match = event.summary?.match(/with (.+?)(?:\s-|\s@|$)/i);
+    return match ? match[1] : 'Client';
+  };
+
+  const extractClientPhone = (event) => {
+    if (event.description) {
+      const phoneMatch = event.description.match(/(?:phone|tel|mobile):\s*(\+?\d[\d\s-()]+)/i);
+      if (phoneMatch) return phoneMatch[1].replace(/\s/g, '');
+    }
+    return null;
+  };
 
   const checkMeetingConflict = () => {
     const now = new Date();
     const sortedMeetings = [...meetings].sort((a, b) => a.startTime - b.startTime);
     
-    // Find current meeting (one we're in now)
     const current = sortedMeetings.find(m => 
       m.startTime <= now && m.endTime > now
     );
     
-    // Find next meeting
     const next = sortedMeetings.find(m => m.startTime > now);
     
     setCurrentMeeting(current);
     setNextMeeting(next);
     
-    // Check if we need to alert
     if (current && next) {
-      const timeUntilNext = (next.startTime - now) / 60000; // minutes
-      const timeRemainingInCurrent = (current.endTime - now) / 60000;
+      const timeUntilNext = (next.startTime - now) / 60000;
       const totalTimeNeeded = TRAVEL_TIME_MINUTES + WARNING_BUFFER_MINUTES;
       
-      // Alert if next meeting is soon and we need to leave
       if (timeUntilNext <= totalTimeNeeded && timeUntilNext > 0 && !alertActive) {
         triggerAlert(next, timeUntilNext);
       }
@@ -132,7 +162,7 @@ export default function Andee() {
       utterance.onend = onEnd;
     }
     
-    synthRef.current.cancel(); // Cancel any ongoing speech
+    synthRef.current.cancel();
     synthRef.current.speak(utterance);
     setSystemMessage(text);
   };
@@ -183,41 +213,88 @@ export default function Andee() {
   const handleReschedule = async (delayMinutes) => {
     if (!nextMeeting) return;
     
-    const newStartTime = new Date(nextMeeting.startTime.getTime() + delayMinutes * 60000);
-    const newEndTime = new Date(nextMeeting.endTime.getTime() + delayMinutes * 60000);
-    
-    // Update meeting
-    setMeetings(prev => prev.map(m => 
-      m.id === nextMeeting.id 
-        ? { ...m, startTime: newStartTime, endTime: newEndTime }
-        : m
-    ));
-    
-    // Send notification to client
-    const message = `Hi ${nextMeeting.clientName}, I'm running behind schedule. I'll be arriving approximately ${delayMinutes} minutes late. Sorry for the inconvenience!`;
-    await sendClientNotification(nextMeeting.clientPhone, message);
-    
-    speak(`Meeting rescheduled. I've notified ${nextMeeting.clientName} that you'll be ${delayMinutes} minutes late.`);
-    setAlertActive(false);
-    addNotification(`Meeting pushed ${delayMinutes} minutes, client notified`, 'success');
+    try {
+      const response = await fetch('/api/calendar/reschedule', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          eventId: nextMeeting.id,
+          delayMinutes
+        })
+      });
+
+      if (response.ok) {
+        const newStartTime = new Date(nextMeeting.startTime.getTime() + delayMinutes * 60000);
+        const newEndTime = new Date(nextMeeting.endTime.getTime() + delayMinutes * 60000);
+        
+        setMeetings(prev => prev.map(m => 
+          m.id === nextMeeting.id 
+            ? { ...m, startTime: newStartTime, endTime: newEndTime }
+            : m
+        ));
+
+        if (nextMeeting.clientPhone) {
+          await sendSMS(nextMeeting.clientPhone, 
+            `Hi ${nextMeeting.clientName}, I'm running behind schedule. I'll be arriving approximately ${delayMinutes} minutes late. Sorry for the inconvenience!`
+          );
+        }
+
+        speak(`Meeting rescheduled. I've updated your calendar${nextMeeting.clientPhone ? ` and notified ${nextMeeting.clientName}` : ''}.`);
+        setAlertActive(false);
+        addNotification(`Meeting pushed ${delayMinutes} minutes${nextMeeting.clientPhone ? ', client notified' : ''}`, 'success');
+      } else {
+        throw new Error('Failed to reschedule');
+      }
+    } catch (error) {
+      console.error('Reschedule error:', error);
+      addNotification('Failed to reschedule meeting', 'error');
+      speak('Sorry, I encountered an error rescheduling the meeting.');
+    }
   };
 
   const handleCancel = async () => {
     if (!nextMeeting) return;
     
-    const message = `Hi ${nextMeeting.clientName}, I need to cancel our meeting today. I'll reach out to reschedule. Apologies for the short notice.`;
-    await sendClientNotification(nextMeeting.clientPhone, message);
-    
-    setMeetings(prev => prev.filter(m => m.id !== nextMeeting.id));
-    speak(`Meeting cancelled. I've notified ${nextMeeting.clientName}.`);
-    setAlertActive(false);
-    addNotification(`Meeting cancelled, client notified`, 'warning');
+    try {
+      const response = await fetch('/api/calendar/cancel', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ eventId: nextMeeting.id })
+      });
+
+      if (response.ok) {
+        if (nextMeeting.clientPhone) {
+          await sendSMS(nextMeeting.clientPhone,
+            `Hi ${nextMeeting.clientName}, I need to cancel our meeting today. I'll reach out to reschedule. Apologies for the short notice.`
+          );
+        }
+
+        setMeetings(prev => prev.filter(m => m.id !== nextMeeting.id));
+        speak(`Meeting cancelled.${nextMeeting.clientPhone ? ` I've notified ${nextMeeting.clientName}.` : ''}`);
+        setAlertActive(false);
+        addNotification(`Meeting cancelled${nextMeeting.clientPhone ? ', client notified' : ''}`, 'warning');
+      } else {
+        throw new Error('Failed to cancel');
+      }
+    } catch (error) {
+      console.error('Cancel error:', error);
+      addNotification('Failed to cancel meeting', 'error');
+      speak('Sorry, I encountered an error cancelling the meeting.');
+    }
   };
 
-  const sendClientNotification = async (phone, message) => {
-    // Simulated SMS sending (in production, this would use Twilio API)
-    console.log(`SMS to ${phone}: ${message}`);
-    return new Promise(resolve => setTimeout(resolve, 500));
+  const sendSMS = async (phone, message) => {
+    try {
+      const response = await fetch('/api/sms/send', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ to: phone, message })
+      });
+      return response.ok;
+    } catch (error) {
+      console.error('SMS error:', error);
+      return false;
+    }
   };
 
   const addNotification = (message, type) => {
@@ -238,15 +315,56 @@ export default function Andee() {
     return Math.round((date - new Date()) / 60000);
   };
 
+  if (status === 'loading') {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 text-white font-sans flex items-center justify-center">
+        <div className="text-center">
+          <div className="w-16 h-16 border-4 border-emerald-500 border-t-transparent rounded-full animate-spin mx-auto mb-4"></div>
+          <p className="text-slate-400">Loading...</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (!session) {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 text-white font-sans flex items-center justify-center p-8">
+        <div className="max-w-md text-center">
+          <div className="w-20 h-20 rounded-full bg-gradient-to-br from-emerald-400 to-teal-600 flex items-center justify-center shadow-lg shadow-emerald-500/30 mx-auto mb-6">
+            <AlertCircle className="w-12 h-12" />
+          </div>
+          <h1 className="text-5xl font-black mb-4">Andee</h1>
+          <p className="text-slate-400 text-lg mb-8">Your Real-Time Meeting Guardian</p>
+          <button
+            onClick={() => signIn('google')}
+            className="flex items-center gap-3 bg-white text-slate-900 px-8 py-4 rounded-xl font-bold text-lg hover:bg-slate-100 transition-all duration-300 hover:scale-105 shadow-xl mx-auto"
+          >
+            <LogIn className="w-6 h-6" />
+            Connect Google Calendar
+          </button>
+          <p className="text-sm text-slate-500 mt-6">
+            Andee monitors your calendar and alerts you before conflicts happen
+          </p>
+        </div>
+      </div>
+    );
+  }
+
   if (!speechSupported) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 text-white font-sans flex items-center justify-center p-8">
         <div className="max-w-md text-center">
           <AlertCircle className="w-16 h-16 text-red-400 mx-auto mb-4" />
           <h2 className="text-2xl font-bold mb-4">Browser Not Supported</h2>
-          <p className="text-slate-300">
+          <p className="text-slate-300 mb-6">
             Andee requires a browser with Web Speech API support. Please use Chrome, Edge, or Safari.
           </p>
+          <button
+            onClick={() => signOut()}
+            className="text-slate-400 hover:text-white transition-colors"
+          >
+            Sign Out
+          </button>
         </div>
       </div>
     );
@@ -254,24 +372,28 @@ export default function Andee() {
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 text-white font-sans">
-      {/* Noise texture overlay */}
       <div className="fixed inset-0 opacity-[0.03] pointer-events-none bg-[url('data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIzMDAiIGhlaWdodD0iMzAwIj48ZmlsdGVyIGlkPSJhIiB4PSIwIiB5PSIwIj48ZmVUdXJidWxlbmNlIGJhc2VGcmVxdWVuY3k9Ii43NSIgc3RpdGNoVGlsZXM9InN0aXRjaCIgdHlwZT0iZnJhY3RhbE5vaXNlIi8+PGZlQ29sb3JNYXRyaXggdHlwZT0ic2F0dXJhdGUiIHZhbHVlcz0iMCIvPjwvZmlsdGVyPjxyZWN0IHdpZHRoPSIxMDAlIiBoZWlnaHQ9IjEwMCUiIGZpbHRlcj0idXJsKCNhKSIvPjwvc3ZnPg==')]" />
       
       <div className="relative z-10 container mx-auto px-4 py-8 max-w-5xl">
-        {/* Header */}
-        <header className="mb-12 text-center">
-          <div className="flex items-center justify-center gap-3 mb-4">
+        <header className="mb-12 flex items-center justify-between">
+          <div className="flex items-center gap-3">
             <div className="w-12 h-12 rounded-full bg-gradient-to-br from-emerald-400 to-teal-600 flex items-center justify-center shadow-lg shadow-emerald-500/30">
               <AlertCircle className="w-7 h-7" />
             </div>
-            <h1 className="text-5xl font-black tracking-tight" style={{ fontFamily: 'system-ui, -apple-system, sans-serif' }}>
-              Andee
-            </h1>
+            <div>
+              <h1 className="text-4xl font-black tracking-tight">Andee</h1>
+              <p className="text-slate-400 text-sm">Monitoring {session.user.email}</p>
+            </div>
           </div>
-          <p className="text-slate-400 text-lg">Your Real-Time Meeting Guardian</p>
+          <button
+            onClick={() => signOut()}
+            className="flex items-center gap-2 text-slate-400 hover:text-white transition-colors px-4 py-2 rounded-lg hover:bg-slate-800/50"
+          >
+            <LogOut className="w-4 h-4" />
+            Sign Out
+          </button>
         </header>
 
-        {/* Alert Status */}
         {alertActive && (
           <div className="mb-8 bg-gradient-to-r from-red-500/20 to-orange-500/20 border-2 border-red-500/50 rounded-2xl p-6 backdrop-blur-sm animate-pulse">
             <div className="flex items-start gap-4">
@@ -295,9 +417,7 @@ export default function Andee() {
           </div>
         )}
 
-        {/* Current Meeting Status */}
         <div className="grid md:grid-cols-2 gap-6 mb-8">
-          {/* Current Meeting */}
           <div className="bg-slate-800/50 backdrop-blur-sm rounded-2xl p-6 border border-slate-700/50 shadow-xl">
             <div className="flex items-center gap-2 mb-4">
               <Clock className="w-5 h-5 text-emerald-400" />
@@ -322,7 +442,6 @@ export default function Andee() {
             )}
           </div>
 
-          {/* Next Meeting */}
           <div className="bg-slate-800/50 backdrop-blur-sm rounded-2xl p-6 border border-slate-700/50 shadow-xl">
             <div className="flex items-center gap-2 mb-4">
               <Calendar className="w-5 h-5 text-blue-400" />
@@ -353,7 +472,6 @@ export default function Andee() {
           </div>
         </div>
 
-        {/* Manual Voice Control */}
         <div className="bg-slate-800/30 backdrop-blur-sm rounded-2xl p-8 border border-slate-700/30 shadow-xl mb-8">
           <h3 className="text-lg font-bold mb-4 text-center">Voice Control</h3>
           <div className="flex flex-col items-center gap-4">
@@ -379,7 +497,6 @@ export default function Andee() {
           </div>
         </div>
 
-        {/* Notifications Log */}
         {notifications.length > 0 && (
           <div className="bg-slate-800/30 backdrop-blur-sm rounded-2xl p-6 border border-slate-700/30 shadow-xl">
             <h3 className="text-lg font-bold mb-4 flex items-center gap-2">
@@ -407,18 +524,17 @@ export default function Andee() {
           </div>
         )}
 
-        {/* Demo Instructions */}
-        <div className="mt-8 p-6 bg-slate-800/20 backdrop-blur-sm rounded-xl border border-slate-700/20">
-          <h4 className="text-sm font-bold text-slate-400 mb-3">🎯 Demo Mode - Try These Commands:</h4>
-          <div className="grid sm:grid-cols-2 gap-2 text-sm text-slate-500">
-            <div>• "Yes" - Confirm you can make it</div>
-            <div>• "No" - Trigger reschedule flow</div>
-            <div>• "Push by 15 minutes" - Delay & notify</div>
-            <div>• "Cancel" - Cancel meeting</div>
-          </div>
-          <p className="text-xs text-slate-600 mt-4">
-            Note: This demo uses simulated meetings. In production, this connects to Google Calendar API and sends real SMS via Twilio.
+        <div className="mt-8 flex items-center justify-between p-4 bg-slate-800/20 backdrop-blur-sm rounded-xl border border-slate-700/20">
+          <p className="text-sm text-slate-400">
+            {loading ? 'Syncing calendar...' : `${meetings.length} meetings loaded`}
           </p>
+          <button
+            onClick={fetchCalendarEvents}
+            disabled={loading}
+            className="text-sm text-emerald-400 hover:text-emerald-300 disabled:opacity-50"
+          >
+            {loading ? 'Syncing...' : 'Refresh Calendar'}
+          </button>
         </div>
       </div>
     </div>
