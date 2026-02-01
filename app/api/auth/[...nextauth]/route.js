@@ -30,30 +30,9 @@ const authOptions = {
     },
   },
   secret: process.env.NEXTAUTH_SECRET,
-  trustHost: true, // ← ADD THIS LINE - Critical for Vercel
+  trustHost: true,
 };
 
 const handler = NextAuth(authOptions);
 
 export { handler as GET, handler as POST };
-```
-
-**The key change:** Added `trustHost: true` to the authOptions.
-
-**Also verify your Vercel Environment Variables:**
-
-1. Go to Vercel → Your Project → Settings → Environment Variables
-2. Make sure these are set for **Production, Preview, and Development**:
-```
-NEXTAUTH_URL=https://andee-ruby.vercel.app
-NEXTAUTH_SECRET=your-secret-key-here
-GOOGLE_CLIENT_ID=your-google-client-id
-GOOGLE_CLIENT_SECRET=your-google-client-secret
-```
-
-**And in Google Cloud Console:**
-
-Make sure these redirect URIs are registered:
-```
-https://andee-ruby.vercel.app/api/auth/callback/google
-https://localhost:3000/api/auth/callback/google
