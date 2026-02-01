@@ -2,13 +2,15 @@ import { getServerSession } from "next-auth/next";
 import { google } from 'googleapis';
 import { NextResponse } from 'next/server';
 
-export async function GET(request) {
+export async function POST(request) {
   try {
     const session = await getServerSession();
     
     if (!session || !session.accessToken) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
+
+    const { eventId } = await request.json();
 
     const oauth2Client = new google.auth.OAuth2(
       process.env.GOOGLE_CLIENT_ID,
@@ -22,21 +24,14 @@ export async function GET(request) {
 
     const calendar = google.calendar({ version: 'v3', auth: oauth2Client });
 
-    const now = new Date();
-    const tomorrow = new Date(now.getTime() + 24 * 60 * 60 * 1000);
-
-    const response = await calendar.events.list({
+    await calendar.events.delete({
       calendarId: 'primary',
-      timeMin: now.toISOString(),
-      timeMax: tomorrow.toISOString(),
-      singleEvents: true,
-      orderBy: 'startTime',
-      maxResults: 10,
+      eventId: eventId,
     });
 
-    return NextResponse.json({ events: response.data.items || [] });
+    return NextResponse.json({ success: true });
   } catch (error) {
-    console.error('Calendar API error:', error);
-    return NextResponse.json({ error: 'Failed to fetch calendar events' }, { status: 500 });
+    console.error('Cancel error:', error);
+    return NextResponse.json({ error: 'Failed to cancel event' }, { status: 500 });
   }
 }
