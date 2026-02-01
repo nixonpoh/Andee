@@ -1,10 +1,13 @@
 import { getServerSession } from "next-auth/next";
+import { authOptions } from "../auth/auth-config";
 import { google } from 'googleapis';
 import { NextResponse } from 'next/server';
 
 export async function GET(request) {
   try {
-    const session = await getServerSession();
+    const session = await getServerSession(authOptions);
+    
+    console.log('Session in calendar route:', session);
     
     if (!session || !session.accessToken) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
@@ -37,6 +40,9 @@ export async function GET(request) {
     return NextResponse.json({ events: response.data.items || [] });
   } catch (error) {
     console.error('Calendar API error:', error);
-    return NextResponse.json({ error: 'Failed to fetch calendar events' }, { status: 500 });
+    return NextResponse.json({ 
+      error: 'Failed to fetch calendar events',
+      details: error.message 
+    }, { status: 500 });
   }
 }
