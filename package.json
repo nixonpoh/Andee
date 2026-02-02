@@ -1,6 +1,6 @@
 {
   "name": "andee-meeting-guardian",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "private": true,
   "scripts": {
     "dev": "next dev",
@@ -14,7 +14,8 @@
     "react-dom": "18.2.0",
     "lucide-react": "0.263.1",
     "next-auth": "4.24.5",
-    "googleapis": "128.0.0"
+    "googleapis": "128.0.0",
+    "@google/generative-ai": "^0.1.3"
   },
   "devDependencies": {
     "autoprefixer": "10.4.16",

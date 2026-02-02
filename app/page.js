@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState, useEffect, useRef } from 'react';
-import { Mic, Calendar, Clock, MapPin, Phone, AlertCircle, CheckCircle, XCircle, LogIn, LogOut, MessageCircle } from 'lucide-react';
+import { Mic, Calendar, Clock, MapPin, Phone, AlertCircle, CheckCircle, XCircle, LogIn, LogOut, MessageCircle, Sparkles } from 'lucide-react';
 import { useSession, signIn, signOut } from 'next-auth/react';
 
 const TRAVEL_TIME_MINUTES = 25;
@@ -177,7 +177,7 @@ export default function Andee() {
         } : null
       };
 
-      // Send to AI
+      // Send to Gemini AI
       const response = await fetch('/api/conversation', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -188,30 +188,22 @@ export default function Andee() {
       });
 
       const data = await response.json();
-      const aiResponse = data.response;
+      let aiResponse = data.response;
 
-      // Check for actions
-      if (aiResponse.includes('[ACTION:CHECK_SCHEDULE]')) {
-        const cleanResponse = aiResponse.replace('[ACTION:CHECK_SCHEDULE]', '');
-        const scheduleInfo = formatSchedule();
-        const fullResponse = `${cleanResponse}${scheduleInfo}`;
-        addToConversation('Andee', fullResponse);
-        speak(fullResponse, () => {
+      // Check for and execute actions
+      const actionExecuted = await executeActions(aiResponse);
+      
+      // Remove action markers from display
+      const cleanResponse = aiResponse.replace(/\[ACTION:.*?\]/g, '').trim();
+      
+      addToConversation('Andee', cleanResponse);
+      speak(cleanResponse, () => {
+        // Continue listening if not closing statement
+        if (!cleanResponse.toLowerCase().includes('anything else') && 
+            !cleanResponse.toLowerCase().includes("that's all")) {
           setTimeout(() => startListening(), 500);
-        });
-      } else if (aiResponse.includes('[ACTION:')) {
-        // Handle other actions
-        const cleanResponse = aiResponse.replace(/\[ACTION:.*?\]/g, '').trim();
-        addToConversation('Andee', cleanResponse);
-        speak(cleanResponse, () => {
-          setTimeout(() => startListening(), 500);
-        });
-      } else {
-        addToConversation('Andee', aiResponse);
-        speak(aiResponse, () => {
-          setTimeout(() => startListening(), 500);
-        });
-      }
+        }
+      });
 
     } catch (error) {
       console.error('Conversation error:', error);
@@ -225,25 +217,150 @@ export default function Andee() {
     }
   };
 
-  const formatSchedule = () => {
-    if (meetings.length === 0) {
-      return " You're all clear today, Boss! No meetings scheduled.";
-    }
-    
-    const upcomingToday = meetings.filter(m => {
-      const today = new Date().toDateString();
-      return m.startTime.toDateString() === today;
-    });
-
-    if (upcomingToday.length === 0) {
-      return " You have no meetings today, Boss!";
+  const executeActions = async (response) => {
+    // Check schedule
+    if (response.includes('[ACTION:CHECK_SCHEDULE]')) {
+      // Calendar info already in context, AI will speak it
+      return true;
     }
 
-    const schedule = upcomingToday.map(m => 
-      `${m.title} at ${formatTime(m.startTime)} with ${m.clientName}`
-    ).join(', ');
+    // Create meeting
+    const createMatch = response.match(/\[ACTION:CREATE_MEETING\|([^|]+)\|([^|]+)\|([^|]+)\|([^|]+)\]/);
+    if (createMatch) {
+      const [, title, date, time, duration] = createMatch;
+      await createMeeting(title, date, time, parseInt(duration));
+      return true;
+    }
 
-    return ` You have ${upcomingToday.length} meeting${upcomingToday.length > 1 ? 's' : ''} today: ${schedule}.`;
+    // Cancel meeting
+    const cancelMatch = response.match(/\[ACTION:CANCEL_MEETING\|([^\]]+)\]/);
+    if (cancelMatch) {
+      const identifier = cancelMatch[1];
+      await cancelMeetingByIdentifier(identifier);
+      return true;
+    }
+
+    // Reschedule meeting
+    const rescheduleMatch = response.match(/\[ACTION:RESCHEDULE_MEETING\|([^|]+)\|([^\]]+)\]/);
+    if (rescheduleMatch) {
+      const [, identifier, newTime] = rescheduleMatch;
+      await rescheduleMeetingByIdentifier(identifier, newTime);
+      return true;
+    }
+
+    return false;
+  };
+
+  const createMeeting = async (title, dateStr, timeStr, duration) => {
+    try {
+      const [year, month, day] = dateStr.split('-').map(Number);
+      const [hour, minute] = timeStr.split(':').map(Number);
+      
+      const startTime = new Date(year, month - 1, day, hour, minute);
+      const endTime = new Date(startTime.getTime() + duration * 60000);
+
+      const response = await fetch('/api/calendar/create', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          title,
+          startTime: startTime.toISOString(),
+          endTime: endTime.toISOString(),
+          location: '',
+          description: ''
+        })
+      });
+
+      if (response.ok) {
+        addNotification(`Meeting created: ${title}`, 'success');
+        await fetchCalendarEvents();
+      }
+    } catch (error) {
+      console.error('Create meeting error:', error);
+      addNotification('Failed to create meeting', 'error');
+    }
+  };
+
+  const cancelMeetingByIdentifier = async (identifier) => {
+    const meeting = findMeetingByIdentifier(identifier);
+    if (!meeting) {
+      addNotification('Meeting not found', 'error');
+      return;
+    }
+
+    try {
+      const response = await fetch('/api/calendar/cancel', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ eventId: meeting.id })
+      });
+
+      if (response.ok) {
+        setMeetings(prev => prev.filter(m => m.id !== meeting.id));
+        addNotification(`Cancelled: ${meeting.title}`, 'warning');
+      }
+    } catch (error) {
+      console.error('Cancel error:', error);
+      addNotification('Failed to cancel meeting', 'error');
+    }
+  };
+
+  const rescheduleMeetingByIdentifier = async (identifier, newTimeStr) => {
+    const meeting = findMeetingByIdentifier(identifier);
+    if (!meeting) {
+      addNotification('Meeting not found', 'error');
+      return;
+    }
+
+    try {
+      const [newHour, newMinute] = newTimeStr.split(':').map(Number);
+      const oldTime = meeting.startTime;
+      const delayMinutes = (newHour * 60 + newMinute) - (oldTime.getHours() * 60 + oldTime.getMinutes());
+
+      const response = await fetch('/api/calendar/reschedule', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          eventId: meeting.id,
+          delayMinutes
+        })
+      });
+
+      if (response.ok) {
+        const newStart = new Date(meeting.startTime.getTime() + delayMinutes * 60000);
+        const newEnd = new Date(meeting.endTime.getTime() + delayMinutes * 60000);
+        
+        setMeetings(prev => prev.map(m => 
+          m.id === meeting.id 
+            ? { ...m, startTime: newStart, endTime: newEnd }
+            : m
+        ));
+        addNotification(`Rescheduled to ${newTimeStr}`, 'success');
+      }
+    } catch (error) {
+      console.error('Reschedule error:', error);
+      addNotification('Failed to reschedule', 'error');
+    }
+  };
+
+  const findMeetingByIdentifier = (identifier) => {
+    // Try to find by time (e.g., "3pm", "15:00")
+    const timeMatch = identifier.match(/(\d+)\s*(am|pm)?/i);
+    if (timeMatch) {
+      let hour = parseInt(timeMatch[1]);
+      const isPM = timeMatch[2]?.toLowerCase() === 'pm';
+      if (isPM && hour !== 12) hour += 12;
+      if (!isPM && hour === 12) hour = 0;
+      
+      return meetings.find(m => m.startTime.getHours() === hour);
+    }
+
+    // Try to find by name
+    const lowerIdentifier = identifier.toLowerCase();
+    return meetings.find(m => 
+      m.clientName.toLowerCase().includes(lowerIdentifier) ||
+      m.title.toLowerCase().includes(lowerIdentifier)
+    );
   };
 
   const addToConversation = (sender, message) => {
@@ -317,11 +434,11 @@ export default function Andee() {
       <div className="min-h-screen bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 text-white font-sans flex items-center justify-center p-8">
         <div className="max-w-md text-center">
           <div className="w-20 h-20 rounded-full bg-gradient-to-br from-emerald-400 to-teal-600 flex items-center justify-center shadow-lg shadow-emerald-500/30 mx-auto mb-6">
-            <MessageCircle className="w-12 h-12" />
+            <Sparkles className="w-12 h-12" />
           </div>
           <h1 className="text-5xl font-black mb-4">Andee</h1>
-          <p className="text-slate-400 text-lg mb-2">Your Conversational AI Assistant</p>
-          <p className="text-slate-500 text-sm mb-8">"Hi Boss! Let's manage your calendar together"</p>
+          <p className="text-slate-400 text-lg mb-2">AI-Powered Assistant</p>
+          <p className="text-slate-500 text-sm mb-8">Powered by Google Gemini AI</p>
           <button
             onClick={() => signIn('google')}
             className="flex items-center gap-3 bg-white text-slate-900 px-8 py-4 rounded-xl font-bold text-lg hover:bg-slate-100 transition-all duration-300 hover:scale-105 shadow-xl mx-auto"
@@ -341,7 +458,7 @@ export default function Andee() {
           <AlertCircle className="w-16 h-16 text-red-400 mx-auto mb-4" />
           <h2 className="text-2xl font-bold mb-4">Browser Not Supported</h2>
           <p className="text-slate-300 mb-6">
-            Andee requires a browser with Web Speech API support. Please use Chrome, Edge, or Safari.
+            Andee requires Chrome, Edge, or Safari for voice features.
           </p>
           <button onClick={() => signOut()} className="text-slate-400 hover:text-white transition-colors">
             Sign Out
@@ -359,11 +476,11 @@ export default function Andee() {
         <header className="mb-8 flex items-center justify-between">
           <div className="flex items-center gap-3">
             <div className="w-12 h-12 rounded-full bg-gradient-to-br from-emerald-400 to-teal-600 flex items-center justify-center shadow-lg shadow-emerald-500/30">
-              <MessageCircle className="w-7 h-7" />
+              <Sparkles className="w-7 h-7" />
             </div>
             <div>
               <h1 className="text-4xl font-black tracking-tight">Andee</h1>
-              <p className="text-slate-400 text-sm">Conversational AI • {session.user.email}</p>
+              <p className="text-slate-400 text-sm">Gemini AI • {session.user.email}</p>
             </div>
           </div>
           <button
@@ -376,28 +493,26 @@ export default function Andee() {
         </header>
 
         <div className="grid lg:grid-cols-3 gap-6">
-          {/* Conversation Panel - Takes 2 columns */}
+          {/* Conversation Panel */}
           <div className="lg:col-span-2">
             <div className="bg-slate-800/30 backdrop-blur-sm rounded-2xl border border-slate-700/30 shadow-xl overflow-hidden">
-              {/* Conversation Header */}
               <div className="p-6 border-b border-slate-700/30">
                 <h2 className="text-2xl font-bold flex items-center gap-2">
-                  <MessageCircle className="w-6 h-6 text-emerald-400" />
+                  <Sparkles className="w-6 h-6 text-emerald-400" />
                   Conversation with Andee
                 </h2>
                 <p className="text-sm text-slate-400 mt-1">
-                  {conversationStarted ? 'Chatting...' : 'Tap the mic to start talking'}
+                  {conversationStarted ? 'Powered by Google Gemini AI' : 'Tap mic to start'}
                 </p>
               </div>
 
-              {/* Conversation Messages */}
               <div className="h-96 overflow-y-auto p-6 space-y-4">
                 {conversation.length === 0 ? (
                   <div className="flex items-center justify-center h-full">
                     <div className="text-center">
                       <Mic className="w-16 h-16 text-slate-600 mx-auto mb-4" />
-                      <p className="text-slate-500">Tap the microphone to start a conversation</p>
-                      <p className="text-sm text-slate-600 mt-2">Andee will greet you with "Hi Boss!"</p>
+                      <p className="text-slate-500">Tap the microphone to start</p>
+                      <p className="text-sm text-slate-600 mt-2">Andee will say "Hi Boss!"</p>
                     </div>
                   </div>
                 ) : (
@@ -409,9 +524,7 @@ export default function Andee() {
                           : 'bg-slate-700/50 border border-slate-600/30'
                       }`}>
                         <div className="flex items-center gap-2 mb-1">
-                          <span className="text-xs font-semibold text-slate-400">
-                            {msg.sender}
-                          </span>
+                          <span className="text-xs font-semibold text-slate-400">{msg.sender}</span>
                           <span className="text-xs text-slate-500">
                             {msg.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                           </span>
@@ -423,7 +536,6 @@ export default function Andee() {
                 )}
               </div>
 
-              {/* Voice Control */}
               <div className="p-6 border-t border-slate-700/30 bg-slate-800/50">
                 <div className="flex items-center justify-center gap-6">
                   <button
@@ -442,7 +554,7 @@ export default function Andee() {
                       {listening ? 'Listening...' : isProcessing ? 'Thinking...' : 'Tap to talk'}
                     </p>
                     <p className="text-sm text-slate-400">
-                      {conversationStarted ? 'Keep the conversation going' : 'Start with "Hi"'}
+                      {isProcessing ? 'Gemini AI processing...' : 'Natural conversation'}
                     </p>
                   </div>
                 </div>
@@ -450,9 +562,8 @@ export default function Andee() {
             </div>
           </div>
 
-          {/* Schedule Panel - Takes 1 column */}
+          {/* Schedule Panel */}
           <div className="lg:col-span-1 space-y-6">
-            {/* Current Meeting */}
             <div className="bg-slate-800/50 backdrop-blur-sm rounded-2xl p-6 border border-slate-700/50 shadow-xl">
               <div className="flex items-center gap-2 mb-4">
                 <Clock className="w-5 h-5 text-emerald-400" />
@@ -469,7 +580,6 @@ export default function Andee() {
               )}
             </div>
 
-            {/* Next Meeting */}
             <div className="bg-slate-800/50 backdrop-blur-sm rounded-2xl p-6 border border-slate-700/50 shadow-xl">
               <div className="flex items-center gap-2 mb-4">
                 <Calendar className="w-5 h-5 text-blue-400" />
@@ -491,13 +601,14 @@ export default function Andee() {
               )}
             </div>
 
-            {/* Quick Stats */}
             <div className="bg-slate-800/50 backdrop-blur-sm rounded-2xl p-6 border border-slate-700/50 shadow-xl">
               <h3 className="text-sm font-bold text-slate-400 mb-3">Today</h3>
               <div className="space-y-2">
                 <div className="flex justify-between">
                   <span className="text-slate-400 text-sm">Meetings</span>
-                  <span className="text-white font-bold">{meetings.filter(m => m.startTime.toDateString() === new Date().toDateString()).length}</span>
+                  <span className="text-white font-bold">
+                    {meetings.filter(m => m.startTime.toDateString() === new Date().toDateString()).length}
+                  </span>
                 </div>
                 <div className="flex justify-between">
                   <span className="text-slate-400 text-sm">Total</span>
@@ -508,7 +619,6 @@ export default function Andee() {
           </div>
         </div>
 
-        {/* Notifications */}
         {notifications.length > 0 && (
           <div className="mt-6 bg-slate-800/30 backdrop-blur-sm rounded-2xl p-4 border border-slate-700/30">
             <div className="flex items-center gap-4 overflow-x-auto">
