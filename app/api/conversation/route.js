@@ -3,75 +3,62 @@ import { NextResponse } from 'next/server';
 
 export async function POST(request) {
   try {
-    // Check if API key exists
+    // Check API key
     if (!process.env.GOOGLE_AI_API_KEY) {
-      console.error('GOOGLE_AI_API_KEY is not set');
+      console.error('GOOGLE_AI_API_KEY not configured');
       return NextResponse.json({ 
-        response: "Boss, I need my API key configured. Please add GOOGLE_AI_API_KEY to your environment variables.",
-        success: false,
-        error: 'API key missing'
+        response: "Boss, my API key isn't configured. Add GOOGLE_AI_API_KEY to environment variables.",
+        success: false
       }, { status: 500 });
     }
 
     const { messages, meetingsContext } = await request.json();
 
-    console.log('Received messages:', messages?.length || 0);
-    console.log('Has meetings context:', !!meetingsContext);
+    console.log('Processing conversation...');
+    console.log('Messages received:', messages?.length);
 
-    // Build system instruction
-    const systemInstruction = `You are Andee, a friendly personal assistant helping your boss manage their calendar.
-
-PERSONALITY:
-- Call the user "Boss" naturally
-- Be warm and conversational
-- Keep responses VERY brief (1-2 sentences max)
-- Be helpful and proactive
-
-CURRENT SITUATION:
-${meetingsContext ? `
-Today: ${new Date().toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' })}
-Time: ${new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })}
-
-${meetingsContext.upcomingMeetings?.length > 0 ? `
-Upcoming meetings: ${meetingsContext.upcomingMeetings.map(m => `${m.title} with ${m.clientName} at ${new Date(m.startTime).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })}`).join(', ')}
-` : 'No meetings scheduled.'}
-` : ''}
-
-CAPABILITIES:
-- Check schedule
-- Create meetings
-- Cancel meetings  
-- Reschedule meetings
-
-WHEN BOSS WANTS ACTION:
-Add ONE action marker at the end:
-- [ACTION:CHECK_SCHEDULE]
-- [ACTION:CREATE_MEETING|title|date|time|duration]
-- [ACTION:CANCEL_MEETING|identifier]
-- [ACTION:RESCHEDULE_MEETING|identifier|new_time]
-
-EXAMPLES:
-User: "Hi" → You: "Hi Boss! How can I help you today?"
-User: "create a meeting" → You: "Sure! Who would you like to meet with?"
-User: "What's today" → You: "Let me check your schedule, Boss. [ACTION:CHECK_SCHEDULE]"
-
-IMPORTANT: 
-- Only respond to the LATEST message
-- Keep it short and natural
-- Ask questions if you need info`;
-
+    // Initialize Gemini
     const genAI = new GoogleGenerativeAI(process.env.GOOGLE_AI_API_KEY);
     
-    // Use gemini-1.5-flash (faster and more reliable than gemini-pro)
-    const model = genAI.getGenerativeModel({ 
-      model: "gemini-1.5-flash"
-    });
+    // Use the correct model name for the package version
+    let model;
+    try {
+      // Try gemini-1.5-flash first (newest)
+      model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+    } catch (e) {
+      try {
+        // Fallback to gemini-pro
+        model = genAI.getGenerativeModel({ model: "gemini-pro" });
+      } catch (e2) {
+        console.error('Model initialization failed:', e2);
+        return NextResponse.json({ 
+          response: "Boss, I'm having trouble loading my AI model. Let me try a simpler approach...",
+          success: false
+        }, { status: 500 });
+      }
+    }
 
-    // Remove duplicates from messages
+    // Build simple, focused system instruction
+    const systemPrompt = `You are Andee, a friendly personal assistant. Call the user "Boss". Keep responses very brief (1-2 sentences). Be helpful with calendar management.
+
+Current context:
+${meetingsContext?.upcomingMeetings?.length > 0 ? 
+  `Upcoming: ${meetingsContext.upcomingMeetings.map(m => `${m.title} at ${new Date(m.startTime).toLocaleTimeString('en-US', {hour: '2-digit', minute: '2-digit'})}`).join(', ')}` 
+  : 'No meetings scheduled'}
+
+When boss wants to:
+- Check schedule: respond with "[ACTION:CHECK_SCHEDULE]"
+- Create meeting: ask who/when, then "[ACTION:CREATE_MEETING|title|date|time|60]"
+- Cancel meeting: "[ACTION:CANCEL_MEETING|identifier]"
+
+Examples:
+User: "Hi" → You: "Hi Boss! How can I help?"
+User: "create a meeting" → You: "Sure! Who do you want to meet with?"`;
+
+    // Remove duplicate messages
     const uniqueMessages = [];
     const seen = new Set();
-    
-    for (const msg of messages) {
+    for (const msg of messages || []) {
       const key = `${msg.role}:${msg.content}`;
       if (!seen.has(key)) {
         seen.add(key);
@@ -79,72 +66,80 @@ IMPORTANT:
       }
     }
 
-    console.log('Unique messages:', uniqueMessages.length);
+    if (uniqueMessages.length === 0) {
+      return NextResponse.json({ 
+        response: "Hi Boss! How can I help you today?",
+        success: true 
+      });
+    }
 
-    // Get history (all but last message)
-    const history = uniqueMessages.slice(0, -1).map(msg => ({
-      role: msg.role === 'user' ? 'user' : 'model',
-      parts: [{ text: msg.content }]
-    }));
-
-    // Get latest message
-    const latestMessage = uniqueMessages[uniqueMessages.length - 1];
-    
-    if (!latestMessage || latestMessage.role !== 'user') {
+    // Get last user message
+    const lastMessage = uniqueMessages[uniqueMessages.length - 1];
+    if (lastMessage.role !== 'user') {
       return NextResponse.json({ 
         response: "I'm listening, Boss!",
         success: true 
       });
     }
 
-    console.log('Latest user message:', latestMessage.content);
+    console.log('User said:', lastMessage.content);
+
+    // Build conversation history for Gemini
+    const history = uniqueMessages.slice(0, -1).map(msg => ({
+      role: msg.role === 'user' ? 'user' : 'model',
+      parts: [{ text: msg.content }]
+    }));
+
+    console.log('Starting chat with', history.length, 'history items');
 
     // Start chat
     const chat = model.startChat({
       history: history,
-      systemInstruction: systemInstruction,
       generationConfig: {
         temperature: 0.8,
-        topK: 40,
-        topP: 0.95,
         maxOutputTokens: 100,
       },
     });
 
-    // Send message
+    // Add system context to user message
+    const messageWithContext = `${systemPrompt}\n\nUser: ${lastMessage.content}`;
+
     console.log('Sending to Gemini...');
-    const result = await chat.sendMessage(latestMessage.content);
-    const text = result.response.text();
     
-    console.log('Gemini response:', text);
+    // Send message
+    const result = await chat.sendMessage(messageWithContext);
+    const responseText = result.response.text();
+    
+    console.log('Gemini responded:', responseText);
 
     return NextResponse.json({ 
-      response: text,
+      response: responseText,
       success: true 
     });
 
   } catch (error) {
-    console.error('Gemini error details:', {
+    console.error('Gemini API Error:', error);
+    console.error('Error details:', {
       message: error.message,
-      stack: error.stack,
-      name: error.name
+      name: error.name,
+      stack: error.stack
     });
     
-    // Better error messages
-    let errorMsg = "Sorry Boss, I had a hiccup. ";
+    // Provide helpful fallback based on error
+    let fallbackResponse = "Sorry Boss, ";
     
-    if (error.message?.includes('API key')) {
-      errorMsg += "My API key isn't working. Check the environment variable.";
-    } else if (error.message?.includes('quota')) {
-      errorMsg += "I've hit my usage limit. Try again in a minute.";
+    if (error.message?.includes('API_KEY')) {
+      fallbackResponse += "my API key has an issue. Please check it's configured correctly.";
+    } else if (error.message?.includes('quota') || error.message?.includes('429')) {
+      fallbackResponse += "I hit my rate limit. Can you try again in a minute?";
     } else if (error.message?.includes('model')) {
-      errorMsg += "There's an issue with my AI model configuration.";
+      fallbackResponse += "there's a problem with my AI model. The package might need updating.";
     } else {
-      errorMsg += "Can you try saying that again?";
+      fallbackResponse += "I had a technical hiccup. Can you try again?";
     }
     
     return NextResponse.json({ 
-      response: errorMsg,
+      response: fallbackResponse,
       success: false,
       error: error.message
     }, { status: 500 });
