@@ -44,6 +44,8 @@ GREETING:
 - When conversation starts, greet with "Hi Boss!" or "Hey Boss!"
 - Be enthusiastic and ready to help
 
+IMPORTANT: You will see the entire conversation history. DO NOT repeat your previous responses. Only respond to the LATEST user message.
+
 WHEN BOSS WANTS TO TAKE ACTION:
 When you understand boss wants to do something, respond naturally and then add ONE of these action markers at the END:
 
@@ -60,55 +62,80 @@ CONVERSATION EXAMPLES:
 User: "Hi"
 You: "Hi Boss! How can I help you today?"
 
+User: "I want to create a meeting"
+You: "Sure thing, Boss! Who would you like to meet with?"
+
+User: "create a meeting"
+You: "Got it! Who would you like to meet with, and when?"
+
 User: "What do I have today?"
 You: "Let me check your schedule for you, Boss. [ACTION:CHECK_SCHEDULE]"
-
-User: "Schedule a meeting with John tomorrow at 2pm"
-You: "You got it, Boss! I'll schedule a meeting with John for tomorrow at 2pm. How long should it be?" 
-[Then after boss answers: "Perfect! Setting that up now. [ACTION:CREATE_MEETING|Meeting with John|2024-02-03|14:00|60]"]
 
 User: "Cancel my 3pm"
 You: "Sure thing, Boss. I'll cancel your 3pm meeting. [ACTION:CANCEL_MEETING|3pm]"
 
-User: "Move my 3pm to 4pm"  
-You: "Done! Moving your meeting from 3pm to 4pm. [ACTION:RESCHEDULE_MEETING|3pm|16:00]"
-
 IMPORTANT RULES:
 - Be conversational, not transactional
 - Use "Boss" naturally (not every sentence)  
-- Keep responses SHORT and friendly
+- Keep responses SHORT and friendly (1-2 sentences)
 - Only use ONE action marker per response
 - Put action markers at the END
 - If you need more info, ASK before acting
-- Confirm before taking destructive actions (cancel/reschedule)`;
+- DO NOT repeat yourself - only respond to the new message`;
 
-    // Initialize Gemini model with system instruction
+    // Initialize Gemini model
     const model = genAI.getGenerativeModel({ 
       model: "gemini-pro",
       systemInstruction: systemInstruction
     });
 
+    // Filter messages - only keep user and assistant messages, avoid duplicates
+    const uniqueMessages = [];
+    const seenContent = new Set();
+    
+    for (const msg of messages) {
+      const key = `${msg.role}:${msg.content}`;
+      if (!seenContent.has(key)) {
+        seenContent.add(key);
+        uniqueMessages.push(msg);
+      }
+    }
+
+    // Get only the conversation history (not including the latest message)
+    const history = uniqueMessages.slice(0, -1).map(msg => ({
+      role: msg.role === 'user' ? 'user' : 'model',
+      parts: [{ text: msg.content }]
+    }));
+
     // Start chat with history
     const chat = model.startChat({
-      history: messages.slice(0, -1).map(msg => ({
-        role: msg.role === 'user' ? 'user' : 'model',
-        parts: [{ text: msg.content }]
-      })),
+      history: history,
       generationConfig: {
         temperature: 0.7,
         topK: 40,
         topP: 0.95,
-        maxOutputTokens: 200,
+        maxOutputTokens: 150, // Shorter responses
       },
     });
 
-    // Get latest user message
-    const userMessage = messages[messages.length - 1].content;
+    // Get latest user message only
+    const latestMessage = uniqueMessages[uniqueMessages.length - 1];
+    
+    if (latestMessage.role !== 'user') {
+      return NextResponse.json({ 
+        response: "I'm ready when you are, Boss!",
+        success: true 
+      });
+    }
+
+    console.log('Sending to Gemini:', latestMessage.content);
     
     // Send message and get response
-    const result = await chat.sendMessage(userMessage);
+    const result = await chat.sendMessage(latestMessage.content);
     const response = result.response;
     const text = response.text();
+
+    console.log('Gemini responded:', text);
 
     return NextResponse.json({ 
       response: text,
