@@ -1,61 +1,42 @@
-import { GoogleGenerativeAI } from '@google/generative-ai';
 import { NextResponse } from 'next/server';
 
 export async function POST(request) {
   try {
-    // Check API key
-    if (!process.env.GOOGLE_AI_API_KEY) {
-      console.error('GOOGLE_AI_API_KEY not configured');
+    const { messages, meetingsContext } = await request.json();
+
+    console.log('Processing with Vertex AI...');
+
+    // Check credentials
+    if (!process.env.GOOGLE_CLOUD_PROJECT_ID || !process.env.GOOGLE_CLOUD_API_KEY) {
       return NextResponse.json({ 
-        response: "Boss, my API key isn't configured. Add GOOGLE_AI_API_KEY to environment variables.",
+        response: "Boss, I need Google Cloud credentials configured. Add GOOGLE_CLOUD_PROJECT_ID and GOOGLE_CLOUD_API_KEY.",
         success: false
       }, { status: 500 });
     }
 
-    const { messages, meetingsContext } = await request.json();
+    const projectId = process.env.GOOGLE_CLOUD_PROJECT_ID;
+    const location = 'us-central1'; // or your preferred region
+    const apiKey = process.env.GOOGLE_CLOUD_API_KEY;
 
-    console.log('Processing conversation...');
-    console.log('Messages received:', messages?.length);
+    // Build system instruction
+    const systemInstruction = `You are Andee, a friendly personal assistant. Call the user "Boss". Keep responses VERY brief (1-2 sentences max).
 
-    // Initialize Gemini
-    const genAI = new GoogleGenerativeAI(process.env.GOOGLE_AI_API_KEY);
-    
-    // Use the correct model name for the package version
-    let model;
-    try {
-      // Try gemini-1.5-flash first (newest)
-      model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
-    } catch (e) {
-      try {
-        // Fallback to gemini-pro
-        model = genAI.getGenerativeModel({ model: "gemini-pro" });
-      } catch (e2) {
-        console.error('Model initialization failed:', e2);
-        return NextResponse.json({ 
-          response: "Boss, I'm having trouble loading my AI model. Let me try a simpler approach...",
-          success: false
-        }, { status: 500 });
-      }
-    }
-
-    // Build simple, focused system instruction
-    const systemPrompt = `You are Andee, a friendly personal assistant. Call the user "Boss". Keep responses very brief (1-2 sentences). Be helpful with calendar management.
-
-Current context:
+Current calendar:
 ${meetingsContext?.upcomingMeetings?.length > 0 ? 
-  `Upcoming: ${meetingsContext.upcomingMeetings.map(m => `${m.title} at ${new Date(m.startTime).toLocaleTimeString('en-US', {hour: '2-digit', minute: '2-digit'})}`).join(', ')}` 
+  `Meetings: ${meetingsContext.upcomingMeetings.map(m => `${m.title} at ${new Date(m.startTime).toLocaleTimeString('en-US', {hour: '2-digit', minute: '2-digit'})}`).join(', ')}` 
   : 'No meetings scheduled'}
 
-When boss wants to:
-- Check schedule: respond with "[ACTION:CHECK_SCHEDULE]"
-- Create meeting: ask who/when, then "[ACTION:CREATE_MEETING|title|date|time|60]"
-- Cancel meeting: "[ACTION:CANCEL_MEETING|identifier]"
+When boss wants action, add marker:
+[ACTION:CHECK_SCHEDULE] - list schedule
+[ACTION:CREATE_MEETING|title|date|time|60] - create
+[ACTION:CANCEL_MEETING|identifier] - cancel
+[ACTION:RESCHEDULE_MEETING|identifier|time] - reschedule
 
 Examples:
-User: "Hi" → You: "Hi Boss! How can I help?"
-User: "create a meeting" → You: "Sure! Who do you want to meet with?"`;
+User: "Hi" → "Hi Boss! How can I help?"
+User: "create a meeting" → "Sure! Who do you want to meet with?"`;
 
-    // Remove duplicate messages
+    // Remove duplicates
     const uniqueMessages = [];
     const seen = new Set();
     for (const msg of messages || []) {
@@ -84,33 +65,71 @@ User: "create a meeting" → You: "Sure! Who do you want to meet with?"`;
 
     console.log('User said:', lastMessage.content);
 
-    // Build conversation history for Gemini
-    const history = uniqueMessages.slice(0, -1).map(msg => ({
-      role: msg.role === 'user' ? 'user' : 'model',
-      parts: [{ text: msg.content }]
-    }));
-
-    console.log('Starting chat with', history.length, 'history items');
-
-    // Start chat
-    const chat = model.startChat({
-      history: history,
-      generationConfig: {
-        temperature: 0.8,
-        maxOutputTokens: 100,
-      },
+    // Build conversation history
+    const contents = [];
+    
+    // Add system instruction as first user message
+    contents.push({
+      role: 'user',
+      parts: [{ text: systemInstruction }]
+    });
+    
+    contents.push({
+      role: 'model',
+      parts: [{ text: 'Understood. I am Andee, your assistant.' }]
     });
 
-    // Add system context to user message
-    const messageWithContext = `${systemPrompt}\n\nUser: ${lastMessage.content}`;
+    // Add conversation history
+    for (let i = 0; i < uniqueMessages.length - 1; i++) {
+      const msg = uniqueMessages[i];
+      contents.push({
+        role: msg.role === 'user' ? 'user' : 'model',
+        parts: [{ text: msg.content }]
+      });
+    }
 
-    console.log('Sending to Gemini...');
-    
-    // Send message
-    const result = await chat.sendMessage(messageWithContext);
-    const responseText = result.response.text();
-    
-    console.log('Gemini responded:', responseText);
+    // Add latest message
+    contents.push({
+      role: 'user',
+      parts: [{ text: lastMessage.content }]
+    });
+
+    // Vertex AI endpoint
+    const endpoint = `https://${location}-aiplatform.googleapis.com/v1/projects/${projectId}/locations/${location}/publishers/google/models/gemini-1.5-flash:generateContent`;
+
+    console.log('Calling Vertex AI...');
+
+    // Call Vertex AI
+    const response = await fetch(endpoint, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-goog-api-key': apiKey
+      },
+      body: JSON.stringify({
+        contents: contents,
+        generationConfig: {
+          temperature: 0.8,
+          maxOutputTokens: 100,
+          topK: 40,
+          topP: 0.95,
+        }
+      })
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error('Vertex AI error:', errorText);
+      throw new Error(`Vertex AI error: ${response.status} - ${errorText}`);
+    }
+
+    const data = await response.json();
+    console.log('Vertex AI response:', data);
+
+    const responseText = data.candidates?.[0]?.content?.parts?.[0]?.text || 
+                        "Sorry Boss, I didn't get a proper response. Can you try again?";
+
+    console.log('Responding:', responseText);
 
     return NextResponse.json({ 
       response: responseText,
@@ -118,24 +137,22 @@ User: "create a meeting" → You: "Sure! Who do you want to meet with?"`;
     });
 
   } catch (error) {
-    console.error('Gemini API Error:', error);
+    console.error('Vertex AI Error:', error);
     console.error('Error details:', {
       message: error.message,
-      name: error.name,
       stack: error.stack
     });
     
-    // Provide helpful fallback based on error
     let fallbackResponse = "Sorry Boss, ";
     
-    if (error.message?.includes('API_KEY')) {
-      fallbackResponse += "my API key has an issue. Please check it's configured correctly.";
-    } else if (error.message?.includes('quota') || error.message?.includes('429')) {
-      fallbackResponse += "I hit my rate limit. Can you try again in a minute?";
-    } else if (error.message?.includes('model')) {
-      fallbackResponse += "there's a problem with my AI model. The package might need updating.";
+    if (error.message?.includes('API key')) {
+      fallbackResponse += "my Google Cloud API key isn't working. Check the environment variables.";
+    } else if (error.message?.includes('403') || error.message?.includes('permission')) {
+      fallbackResponse += "I don't have permission. Make sure Vertex AI API is enabled in Google Cloud.";
+    } else if (error.message?.includes('404')) {
+      fallbackResponse += "the Vertex AI endpoint wasn't found. Check your project ID.";
     } else {
-      fallbackResponse += "I had a technical hiccup. Can you try again?";
+      fallbackResponse += "I had a hiccup with Vertex AI. Can you try again?";
     }
     
     return NextResponse.json({ 

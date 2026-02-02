@@ -372,22 +372,98 @@ export default function Andee() {
     ];
   };
 
-  const speak = (text, onEnd) => {
-    if (!synthRef.current) return;
-    
+const speak = async (text, onEnd) => {
+  try {
+    // Remove action markers from text
     const cleanText = text.replace(/\[ACTION:.*?\]/g, '').trim();
-    const utterance = new SpeechSynthesisUtterance(cleanText);
-    utterance.rate = 1.0;
-    utterance.pitch = 1.0;
-    utterance.volume = 1.0;
     
-    if (onEnd) {
-      utterance.onend = onEnd;
+    if (!cleanText) {
+      if (onEnd) onEnd();
+      return;
     }
+
+    console.log('Speaking with Google TTS:', cleanText);
+
+    // Call Google Cloud TTS API
+    const response = await fetch('/api/tts', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text: cleanText })
+    });
+
+    if (!response.ok) {
+      throw new Error('TTS failed');
+    }
+
+    const data = await response.json();
     
-    synthRef.current.cancel();
-    synthRef.current.speak(utterance);
-  };
+    if (!data.audioContent) {
+      throw new Error('No audio received');
+    }
+
+    // Convert base64 to blob
+    const audioBlob = base64ToBlob(data.audioContent, 'audio/mp3');
+    const audioUrl = URL.createObjectURL(audioBlob);
+
+    // Play audio
+    const audio = new Audio(audioUrl);
+    
+    audio.onended = () => {
+      URL.revokeObjectURL(audioUrl); // Clean up
+      if (onEnd) onEnd();
+    };
+
+    audio.onerror = (error) => {
+      console.error('Audio playback error:', error);
+      URL.revokeObjectURL(audioUrl);
+      // Fallback to browser speech
+      fallbackSpeak(cleanText, onEnd);
+    };
+
+    await audio.play();
+
+  } catch (error) {
+    console.error('Google TTS error:', error);
+    // Fallback to browser speech synthesis
+    fallbackSpeak(text, onEnd);
+  }
+};
+
+// Helper function to convert base64 to blob
+const base64ToBlob = (base64, mimeType) => {
+  const byteCharacters = atob(base64);
+  const byteNumbers = new Array(byteCharacters.length);
+  
+  for (let i = 0; i < byteCharacters.length; i++) {
+    byteNumbers[i] = byteCharacters.charCodeAt(i);
+  }
+  
+  const byteArray = new Uint8Array(byteNumbers);
+  return new Blob([byteArray], { type: mimeType });
+};
+
+// Fallback to browser speech if Google TTS fails
+const fallbackSpeak = (text, onEnd) => {
+  if (!synthRef.current) {
+    if (onEnd) onEnd();
+    return;
+  }
+  
+  const cleanText = text.replace(/\[ACTION:.*?\]/g, '').trim();
+  const utterance = new SpeechSynthesisUtterance(cleanText);
+  utterance.rate = 1.0;
+  utterance.pitch = 1.0;
+  utterance.volume = 1.0;
+  
+  if (onEnd) {
+    utterance.onend = onEnd;
+  }
+  
+  synthRef.current.cancel();
+  synthRef.current.speak(utterance);
+};
+
+
 
   const startListening = () => {
     if (recognitionRef.current && !listening) {
